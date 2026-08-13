@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>富煜蔬菜 — 訂單儀表板</title>
+<style>
+  body { font-family: -apple-system, "PingFang TC", "Microsoft JhengHei", sans-serif; margin:0; background:#f0faf2; color:#222; }
+  .top { background:#2d6a4f; color:white; padding:16px; }
+  .top h1 { margin:0; font-size:18px; }
+  .container { max-width:720px; margin:0 auto; padding:16px; }
+  .login-box { background:white; border-radius:14px; padding:24px; margin-top:40px; text-align:center; box-shadow:0 2px 10px rgba(0,0,0,0.08); }
+  .login-box input { border:2px solid #2d6a4f; border-radius:8px; padding:10px; font-size:16px; width:160px; text-align:center; margin:12px 0; }
+  .login-box button { display:block; width:100%; background:#2d6a4f; color:white; border:none; border-radius:10px; padding:12px; font-size:15px; font-weight:600; cursor:pointer; }
+  .toolbar { display:flex; gap:8px; align-items:center; margin-bottom:14px; }
+  .toolbar input[type=date] { flex:1; border:1.5px solid #cde; border-radius:8px; padding:8px; font-size:14px; }
+  .toolbar button { background:#2d6a4f; color:white; border:none; border-radius:8px; padding:8px 14px; font-size:14px; cursor:pointer; }
+  .order-card { background:white; border-radius:12px; padding:14px 16px; margin-bottom:10px; box-shadow:0 1px 6px rgba(0,0,0,0.06); }
+  .order-head { display:flex; justify-content:space-between; align-items:center; cursor:pointer; }
+  .customer-name { font-weight:700; font-size:15px; }
+  .badge { font-size:12px; padding:3px 8px; border-radius:20px; font-weight:600; }
+  .badge-new { background:#d8f3dc; color:#2d6a4f; }
+  .badge-modified { background:#fff3cd; color:#856404; }
+  .badge-cancelled { background:#f8d7da; color:#842029; }
+  .meta { font-size:12px; color:#888; margin-top:2px; }
+  .items { margin-top:10px; font-size:13px; border-top:1px dashed #e0e0e0; padding-top:8px; display:none; }
+  .items.open { display:block; }
+  .items div { padding:2px 0; }
+  .log-line { font-size:12px; color:#555; padding:2px 0; }
+  .delete-btn { display:block; width:100%; margin-top:10px; padding:8px; background:#fff5f5; color:#c0392b; border:1.5px solid #e0a0a0; border-radius:8px; font-size:12px; cursor:pointer; }
+  .order-check { margin-right:10px; width:18px; height:18px; cursor:pointer; flex-shrink:0; }
+  .batch-bar { position:sticky; top:0; z-index:10; background:#2d6a4f; color:white; padding:10px 14px; border-radius:10px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; font-size:14px; }
+  .batch-bar button { background:#c0392b; color:white; border:none; border-radius:8px; padding:8px 14px; font-size:13px; cursor:pointer; }
+  .empty { text-align:center; color:#888; padding:40px 0; }
+  .err { color:#c0392b; text-align:center; margin-top:10px; font-size:14px; }
+</style>
+</head>
+<body>
+
+<div class="top"><h1>🥦 富煜蔬菜 — 訂單儀表板</h1></div>
+<div class="container" id="app"></div>
+
+<script>
+// ★ 部署好新的 Apps Script 後，把網址貼在這裡（跟 order-v2.html 用同一個）
+const V2_GAS_URL = 'https://script.google.com/macros/s/AKfycbzJoshr1TCO-8pCC3ICJyHKfhR1Frz9Q2RctGMbs2nsRgjy-2wdhWYKeneV_HaZzTGM/exec';
+const FRONTEND_VERSION = 'v1.7-2026-08-13'; // ★ 新增整批匯出Excel按鈕
+
+fetch(V2_GAS_URL + '?action=ping').then(r=>r.json()).then(d=>{
+  const el = document.createElement('div');
+  el.style.cssText = 'position:fixed;bottom:4px;right:6px;font-size:10px;color:#bbb;z-index:99999;';
+  el.textContent = '前端 ' + FRONTEND_VERSION + ' ／ 後端 ' + (d.version||'未知');
+  document.body.appendChild(el);
+}).catch(()=>{});
+
+let pwd = sessionStorage.getItem('v2_dashboard_pwd') || '';
+
+function renderLogin(errMsg) {
+  document.getElementById('app').innerHTML =
+    '<div class="login-box">' +
+      '<div style="font-size:16px;font-weight:600;color:#2d6a4f;">請輸入儀表板密碼</div>' +
+      '<input type="password" id="pwdInput" maxlength="12" placeholder="密碼" />' +
+      '<button onclick="tryLogin()">登入</button>' +
+      (errMsg ? '<div class="err">' + errMsg + '</div>' : '') +
+    '</div>';
+  document.getElementById('pwdInput').focus();
+  document.getElementById('pwdInput').addEventListener('keydown', e => { if (e.key==='Enter') tryLogin(); });
+}
+
+function tryLogin() {
+  pwd = document.getElementById('pwdInput').value;
+  loadDashboard();
+}
+
+function todayStr() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+
+function loadDashboard(dateOverride) {
+  const date = dateOverride || todayStr();
+  fetch(V2_GAS_URL + '?action=dashboard&date=' + encodeURIComponent(date) + '&pwd=' + encodeURIComponent(pwd))
+    .then(r => r.json())
+    .then(data => {
+      if (data.error === 'unauthorized') { renderLogin('密碼錯誤，請再試一次'); return; }
+      sessionStorage.setItem('v2_dashboard_pwd', pwd);
+      renderOrders(data.orders || [], date);
+    })
+    .catch(() => renderLogin('連線失敗，請檢查網路後再試一次'));
+}
+
+let selectedIds = new Set();
+
+function renderOrders(orders, date) {
+  selectedIds.clear();
+  let html = '<div class="toolbar">' +
+    '<input type="date" id="dateInput" value="' + date + '" onchange="loadDashboard(this.value)">' +
+    '<button onclick="loadDashboard(document.getElementById(\'dateInput\').value)">重新整理</button>' +
+    '<button onclick="exportExcel(event)" style="background:#1864ab;">📥 匯出Excel</button>' +
+    '</div>';
+
+  if (!orders.length) {
+    html += '<div class="empty">這天目前還沒有訂單</div>';
+    document.getElementById('app').innerHTML = html;
+    return;
+  }
+
+  html += '<div class="batch-bar" id="batchBar" style="display:none;">' +
+    '<span id="batchCount">已選取 0 筆</span>' +
+    '<span>' +
+      '<button style="background:#555;margin-right:8px;" onclick="clearSelection()">取消選取</button>' +
+      '<button onclick="deleteBatch()">🗑️ 刪除已選取</button>' +
+    '</span>' +
+  '</div>';
+
+  orders.sort((a,b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+
+  orders.forEach((o, idx) => {
+    const badge = o.status === 'cancelled'
+      ? '<span class="badge badge-cancelled">❌ 已取消</span>'
+      : (o.changeCount > 1 ? '<span class="badge badge-modified">✏️ 已修改 ' + (o.changeCount-1) + ' 次</span>' : '<span class="badge badge-new">🆕 新單</span>');
+
+    html += '<div class="order-card">' +
+      '<div class="order-head" onclick="toggleItems(' + idx + ')">' +
+        '<input type="checkbox" class="order-check" onclick="event.stopPropagation();toggleSelect(\'' + o.orderId + '\')">' +
+        '<div style="flex:1;"><div class="customer-name">' + escapeHtml(o.customer) + '</div>' +
+        '<div class="meta">建立 ' + o.createdAt + (o.updatedAt !== o.createdAt ? '　最後修改 ' + o.updatedAt : '') + '</div></div>' +
+        badge +
+      '</div>' +
+      '<div class="items" id="items' + idx + '">' +
+        o.items.map(it => '<div>• ' + escapeHtml(it.name) + '　' + it.qty + (it.unit||'') + (it.note ? '（'+escapeHtml(it.note)+'）' : '') + '</div>').join('') +
+        (o.logs && o.logs.length ? '<div style="margin-top:8px;border-top:1px dashed #e0e0e0;padding-top:6px;">' +
+          o.logs.map(l => '<div class="log-line">' + l.time + '　' + l.detail + '</div>').join('') + '</div>' : '') +
+        '<button class="delete-btn" onclick="event.stopPropagation();deleteOrder(\'' + o.orderId + '\',\'' + escapeHtml(o.customer).replace(/'/g,"\\'") + '\')">🗑️ 刪除這筆訂單（測試用，正式資料請用「取消」）</button>' +
+      '</div>' +
+    '</div>';
+  });
+
+  document.getElementById('app').innerHTML = html;
+}
+
+function exportExcel(event) {
+  const date = document.getElementById('dateInput').value;
+  const btn = event.target;
+  const originalText = btn.textContent;
+  btn.disabled = true; btn.textContent = '匯出中...（可能要等 10-30 秒）';
+
+  fetch(V2_GAS_URL + '?action=exportExcel&date=' + encodeURIComponent(date) + '&pwd=' + encodeURIComponent(pwd))
+    .then(r => r.json())
+    .then(result => {
+      btn.disabled = false; btn.textContent = originalText;
+      if (result.error) { alert('匯出失敗：' + result.error); return; }
+      const byteChars = atob(result.base64);
+      const byteNumbers = new Array(byteChars.length);
+      for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+      const blob = new Blob([new Uint8Array(byteNumbers)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = result.filename; document.body.appendChild(a); a.click();
+      document.body.removeChild(a); URL.revokeObjectURL(url);
+    })
+    .catch(() => { btn.disabled = false; btn.textContent = originalText; alert('匯出失敗，請檢查網路後再試一次。'); });
+}
+
+function toggleSelect(orderId) {
+  if (selectedIds.has(orderId)) selectedIds.delete(orderId); else selectedIds.add(orderId);
+  const bar = document.getElementById('batchBar');
+  bar.style.display = selectedIds.size ? 'flex' : 'none';
+  document.getElementById('batchCount').textContent = '已選取 ' + selectedIds.size + ' 筆';
+}
+
+function clearSelection() {
+  selectedIds.clear();
+  document.querySelectorAll('.order-check').forEach(c => c.checked = false);
+  document.getElementById('batchBar').style.display = 'none';
+}
+
+function deleteBatch() {
+  const count = selectedIds.size;
+  if (!count) return;
+  if (!confirm('確定要「永久刪除」選取的 ' + count + ' 筆訂單嗎？\n\n這跟「取消」不一樣，刪除後連紀錄都不會留下，無法復原，僅建議測試資料使用。')) return;
+
+  fetch(V2_GAS_URL, {
+    method: 'POST',
+    body: JSON.stringify({ action: 'deleteBatch', ids: Array.from(selectedIds), pwd: pwd })
+  })
+    .then(r => r.json())
+    .then(result => {
+      if (result.error) { alert('刪除失敗：' + result.error); return; }
+      loadDashboard(document.getElementById('dateInput').value);
+    })
+    .catch(() => alert('刪除失敗，請檢查網路後再試一次。'));
+}
+
+function deleteOrder(orderId, customer) {
+  if (!confirm('確定要「永久刪除」' + customer + ' 這筆訂單（' + orderId + '）嗎？\n\n這跟「取消」不一樣，刪除後連紀錄都不會留下，無法復原，僅建議測試資料使用。')) return;
+  fetch(V2_GAS_URL + '?action=delete&id=' + encodeURIComponent(orderId) + '&pwd=' + encodeURIComponent(pwd))
+    .then(r => r.json())
+    .then(result => {
+      if (result.error) { alert('刪除失敗：' + result.error); return; }
+      loadDashboard(document.getElementById('dateInput').value);
+    })
+    .catch(() => alert('刪除失敗，請檢查網路後再試一次。'));
+}
+
+function toggleItems(idx) {
+  document.getElementById('items' + idx).classList.toggle('open');
+}
+
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+if (pwd) loadDashboard(); else renderLogin();
+</script>
+</body>
+</html>
