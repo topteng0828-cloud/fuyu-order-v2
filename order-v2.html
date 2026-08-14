@@ -143,6 +143,14 @@
 </head>
 <body>
 
+<div id="v2Splash" style="position:fixed;inset:0;background:linear-gradient(180deg,#2d6a4f,#1b4332);z-index:100000;display:flex;flex-direction:column;align-items:center;justify-content:center;color:white;text-align:center;padding:20px;">
+  <div style="font-size:56px;margin-bottom:20px;">🥬</div>
+  <div style="font-size:22px;font-weight:700;margin-bottom:10px;">富煜蔬菜為您準備</div>
+  <div style="font-size:15px;color:#d8f3dc;margin-bottom:32px;">新鮮產地直送，馬上就好</div>
+  <div style="width:32px;height:32px;border:3px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:v2spin 0.8s linear infinite;"></div>
+  <style>@keyframes v2spin{to{transform:rotate(360deg);}}</style>
+</div>
+
 <div class="header">
   <div>
     <div class="logo">富煜<span>蔬菜</span></div>
@@ -981,9 +989,24 @@ let activeCategory = '全部';
 // ★ v2 新增：這個測試頁面連到全新、獨立的訂單記憶後端，跟現有正式的 GAS_URL 完全分開
 // 部署好新的 Apps Script 後，把網址貼在這裡
 const V2_GAS_URL = 'https://script.google.com/macros/s/AKfycbzJoshr1TCO-8pCC3ICJyHKfhR1Frz9Q2RctGMbs2nsRgjy-2wdhWYKeneV_HaZzTGM/exec';
-const FRONTEND_VERSION = 'v2.2-2026-08-14'; // ★ 合併兩次檢查請求成一次，減少開頁偵測延遲
+const FRONTEND_VERSION = 'v2.3-2026-08-14'; // ★ 新增全螢幕準備畫面，等資料就緒才淡出進入下單畫面
 
 let editingOrderId = null; // 目前是不是正在編輯一張既有訂單（有值代表「更新」，null 代表「新建」）
+
+// ★ v2 新增：全螢幕準備畫面，等背景查詢完成（或至少顯示過最短時間，避免太快閃一下很突兀）才淡出
+let _splashMinTimePassed = false;
+setTimeout(() => { _splashMinTimePassed = true; tryHideSplash(); }, 500);
+let _splashDataReady = false;
+function markSplashDataReady() { _splashDataReady = true; tryHideSplash(); }
+setTimeout(() => { markSplashDataReady(); }, 8000); // ★ 保險：萬一網路異常卡住，最多8秒後還是會強制進入畫面
+function tryHideSplash() {
+  if (!_splashMinTimePassed || !_splashDataReady) return;
+  const el = document.getElementById('v2Splash');
+  if (!el) return;
+  el.style.transition = 'opacity 0.3s';
+  el.style.opacity = '0';
+  setTimeout(() => el.remove(), 300);
+}
 
 // ── 初始化 ────────────────────────────────────────
 function init() {
@@ -1052,8 +1075,9 @@ function checkOnPageOpen() {
         lockSendButtonsForExistingOrder();
         showV2Banner('locked', '⏰ 今日下單時間已截止，請明天再回來下單，謝謝！');
       }
+      markSplashDataReady();
     })
-    .catch(() => {});
+    .catch(() => { markSplashDataReady(); });
 }
 
 // ★ v2 新增：透過專屬連結進來 → 向後端要這張訂單的最新內容，整個帶入畫面
@@ -1065,6 +1089,7 @@ function loadOrderForEdit(id) {
       if (data.error) {
         showV2Banner('error', '找不到這張訂單，連結可能已失效，請聯絡店家。');
         renderProducts(); updatePanel(); updateQuickBtns();
+        markSplashDataReady();
         return;
       }
       editingOrderId = id;
@@ -1083,8 +1108,9 @@ function loadOrderForEdit(id) {
         showV2Banner('editing', '✏️ 正在編輯訂單（' + id + '），修改完成後按「送出」即可更新，截止時間 ' + (data.cutoffTime||'') + '。');
       }
       showHistoryLine(data.history);
+      markSplashDataReady();
     })
-    .catch(() => showV2Banner('error', '連線失敗，請檢查網路。'));
+    .catch(() => { showV2Banner('error', '連線失敗，請檢查網路。'); markSplashDataReady(); });
 }
 
 // ★ 新增：顯示這張訂單的修改次數跟每次的時間點，不含每次改了什麼內容
