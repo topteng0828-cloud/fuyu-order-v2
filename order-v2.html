@@ -981,7 +981,7 @@ let activeCategory = '全部';
 // ★ v2 新增：這個測試頁面連到全新、獨立的訂單記憶後端，跟現有正式的 GAS_URL 完全分開
 // 部署好新的 Apps Script 後，把網址貼在這裡
 const V2_GAS_URL = 'https://script.google.com/macros/s/AKfycbzJoshr1TCO-8pCC3ICJyHKfhR1Frz9Q2RctGMbs2nsRgjy-2wdhWYKeneV_HaZzTGM/exec';
-const FRONTEND_VERSION = 'v1.9-2026-08-13'; // ★ 顯示訂單修改次數與時間點（不含內容）
+const FRONTEND_VERSION = 'v2.2-2026-08-14'; // ★ 合併兩次檢查請求成一次，減少開頁偵測延遲
 
 let editingOrderId = null; // 目前是不是正在編輯一張既有訂單（有值代表「更新」，null 代表「新建」）
 
@@ -1012,7 +1012,7 @@ function init() {
     try { const s = localStorage.getItem(LS_CART); if (s) cart = JSON.parse(s); } catch(e) { cart = {}; }
     renderProducts(); updatePanel(); updateQuickBtns();
     setupExistingOrderCheck();
-    checkOnPageOpen(); // ★ 一打開頁面就主動檢查，不用等客戶重新打字或按送出
+    checkOnPageOpen(); // ★ 一打開頁面就主動檢查（已有訂單／截止時間，一次問完，減少等待時間）
   }
 }
 
@@ -1034,18 +1034,23 @@ function unlockSendButtons() {
   });
 }
 
+// ★ v2 修改：合併成一次請求，同時取得「今天是否已有訂單」跟「現在是否還在下單時間內」，
+// 減少一次網路來回，讓偵測感覺更快、更無感
 function checkOnPageOpen() {
   const customer = document.getElementById('customerName').value.trim();
   const delivery = document.getElementById('deliveryDate').value;
-  if (!customer || !delivery) return;
+
   fetch(V2_GAS_URL + '?action=check&customer=' + encodeURIComponent(customer) + '&date=' + encodeURIComponent(delivery))
     .then(r => r.json())
     .then(data => {
-      if (data.exists && data.editable) {
+      if (customer && delivery && data.exists && data.editable) {
         lockSendButtonsForExistingOrder();
         showV2ClickableBanner('您今天已經下過訂單了，點這裡查看／修改', () => {
           askContinueOrNew(data.orderId, data.items, customer, delivery, null, data.history);
         });
+      } else if (!data.windowOpen) {
+        lockSendButtonsForExistingOrder();
+        showV2Banner('locked', '⏰ 今日下單時間已截止，請明天再回來下單，謝謝！');
       }
     })
     .catch(() => {});
@@ -1714,6 +1719,13 @@ async function openLine() {
     msg += '📝 之後要修改這張訂單，請用同一個連結回來改：\n' + editUrl + '\n';
 
     showV2Banner('editing', isUpdate ? '✅ 訂單已更新！' : '✅ 訂單已送出！');
+
+    // ★ 修正：送出成功後要把購物車清空（跟正式系統原本的行為一樣），
+    // 之前漏了這步，變成 autoSave() 又把（還是滿的）購物車存回去，重開頁面東西還在
+    localStorage.setItem('lastOrder', JSON.stringify(cart));
+    cart = {};
+    editingOrderId = null; // 這次的編輯/新增已經結束，回到乾淨狀態，下次操作重新判斷
+    renderProducts(); updatePanel(); updateQuickBtns();
     autoSave();
 
     window.location.href = 'https://line.me/R/share?text=' + encodeURIComponent(msg);
