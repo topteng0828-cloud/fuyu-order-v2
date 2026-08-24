@@ -33,6 +33,21 @@
   .batch-bar button { background:#c0392b; color:white; border:none; border-radius:8px; padding:8px 14px; font-size:13px; cursor:pointer; }
   .empty { text-align:center; color:#888; padding:40px 0; }
   .err { color:#c0392b; text-align:center; margin-top:10px; font-size:14px; }
+  .tabbar { display:flex; gap:8px; margin-bottom:14px; }
+  .tabbar button { flex:1; background:white; color:#2d6a4f; border:1.5px solid #2d6a4f; border-radius:10px; padding:10px; font-size:14px; font-weight:600; cursor:pointer; }
+  .tabbar button.active { background:#2d6a4f; color:white; }
+  .cust-add-box { background:white; border-radius:12px; padding:14px 16px; margin-bottom:14px; box-shadow:0 1px 6px rgba(0,0,0,0.06); }
+  .cust-add-box input[type=text] { width:100%; box-sizing:border-box; border:1.5px solid #cde; border-radius:8px; padding:10px; font-size:14px; margin-bottom:8px; }
+  .cust-add-box button { width:100%; background:#2d6a4f; color:white; border:none; border-radius:8px; padding:10px; font-size:14px; font-weight:600; cursor:pointer; }
+  .cust-card { background:white; border-radius:12px; padding:12px 16px; margin-bottom:8px; box-shadow:0 1px 6px rgba(0,0,0,0.06); }
+  .cust-row { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .cust-name { font-weight:700; font-size:15px; }
+  .cust-meta { font-size:12px; color:#888; margin-top:2px; }
+  .cust-link { font-size:12px; color:#1864ab; word-break:break-all; margin-top:8px; background:#f0f6ff; padding:8px; border-radius:6px; }
+  .cust-btns { display:flex; gap:6px; margin-top:8px; }
+  .cust-btns button { flex:1; border:none; border-radius:6px; padding:6px; font-size:12px; cursor:pointer; }
+  .btn-copy { background:#e7f5ff; color:#1864ab; }
+  .btn-edit { background:#fff3cd; color:#856404; }
 </style>
 </head>
 <body>
@@ -43,7 +58,9 @@
 <script>
 // ★ 部署好新的 Apps Script 後，把網址貼在這裡（跟 order-v2.html 用同一個）
 const V2_GAS_URL = 'https://script.google.com/macros/s/AKfycbzJoshr1TCO-8pCC3ICJyHKfhR1Frz9Q2RctGMbs2nsRgjy-2wdhWYKeneV_HaZzTGM/exec';
-const FRONTEND_VERSION = 'v1.7-2026-08-13'; // ★ 新增整批匯出Excel按鈕
+// ★ 客戶下單頁面的正式網址，用來組客戶專屬連結（?c=編號）。切換成正式 index.html 後，記得回來改這裡。
+const ORDER_PAGE_URL = 'https://tom-teng-ai.github.io/fuyu-order/index.html';
+const FRONTEND_VERSION = 'v1.8-2026-08-19'; // ★ 新增客戶管理（專屬連結）分頁
 
 fetch(V2_GAS_URL + '?action=ping').then(r=>r.json()).then(d=>{
   const el = document.createElement('div');
@@ -76,6 +93,21 @@ function todayStr() {
   return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
 }
 
+let currentTab = 'orders';
+
+function renderTabBar() {
+  return '<div class="tabbar">' +
+    '<button class="' + (currentTab==='orders'?'active':'') + '" onclick="switchTab(\'orders\')">📋 訂單</button>' +
+    '<button class="' + (currentTab==='customers'?'active':'') + '" onclick="switchTab(\'customers\')">👥 客戶管理</button>' +
+  '</div>';
+}
+
+function switchTab(tab) {
+  currentTab = tab;
+  if (tab === 'orders') loadDashboard();
+  else loadCustomers();
+}
+
 function loadDashboard(dateOverride) {
   const date = dateOverride || todayStr();
   fetch(V2_GAS_URL + '?action=dashboard&date=' + encodeURIComponent(date) + '&pwd=' + encodeURIComponent(pwd))
@@ -92,7 +124,9 @@ let selectedIds = new Set();
 
 function renderOrders(orders, date) {
   selectedIds.clear();
-  let html = '<div class="toolbar">' +
+  currentTab = 'orders';
+  let html = renderTabBar();
+  html += '<div class="toolbar">' +
     '<input type="date" id="dateInput" value="' + date + '" onchange="loadDashboard(this.value)">' +
     '<button onclick="loadDashboard(document.getElementById(\'dateInput\').value)">重新整理</button>' +
     '<button onclick="exportExcel(event)" style="background:#1864ab;">📥 匯出Excel</button>' +
@@ -159,6 +193,124 @@ function exportExcel(event) {
       document.body.removeChild(a); URL.revokeObjectURL(url);
     })
     .catch(() => { btn.disabled = false; btn.textContent = originalText; alert('匯出失敗，請檢查網路後再試一次。'); });
+}
+
+// ── 客戶管理（專屬連結）────────────────────────────────
+let allCustomers = [];
+
+function loadCustomers() {
+  currentTab = 'customers';
+  document.getElementById('app').innerHTML = renderTabBar() + '<div class="empty">載入中...</div>';
+  fetch(V2_GAS_URL + '?action=customerList&pwd=' + encodeURIComponent(pwd))
+    .then(r => r.json())
+    .then(data => {
+      if (data.error === 'unauthorized') { renderLogin('密碼錯誤，請再試一次'); return; }
+      sessionStorage.setItem('v2_dashboard_pwd', pwd);
+      allCustomers = data.customers || [];
+      renderCustomers(allCustomers);
+    })
+    .catch(() => { document.getElementById('app').innerHTML = renderTabBar() + '<div class="err">連線失敗，請檢查網路後再試一次</div>'; });
+}
+
+function renderCustomers(customers) {
+  let html = renderTabBar();
+
+  html += '<div class="cust-add-box">' +
+    '<div style="font-size:14px;font-weight:600;color:#2d6a4f;margin-bottom:8px;">➕ 新增客戶（建立專屬連結）</div>' +
+    '<input type="text" id="newCustName" placeholder="輸入客戶名稱">' +
+    '<button onclick="createCustomerUI()">建立專屬連結</button>' +
+  '</div>';
+
+  html += '<input type="text" id="custSearch" placeholder="🔍 搜尋客戶名稱..." ' +
+    'style="width:100%;box-sizing:border-box;border:1.5px solid #cde;border-radius:8px;padding:10px;font-size:14px;margin-bottom:12px;" ' +
+    'oninput="filterCustomers(this.value)">';
+
+  html += '<div id="custList"></div>';
+
+  document.getElementById('app').innerHTML = html;
+  renderCustomerList(customers);
+}
+
+function renderCustomerList(customers) {
+  const listEl = document.getElementById('custList');
+  if (!listEl) return;
+  if (!customers.length) {
+    listEl.innerHTML = '<div class="empty">還沒有客戶資料，用上面的欄位建立第一位吧</div>';
+    return;
+  }
+  const sorted = [...customers].sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||''));
+  listEl.innerHTML = sorted.map(c => {
+    const link = ORDER_PAGE_URL + '?c=' + encodeURIComponent(c.customerId);
+    return '<div class="cust-card">' +
+      '<div class="cust-row">' +
+        '<div><div class="cust-name">' + escapeHtml(c.customerName) + '</div>' +
+        '<div class="cust-meta">編號 ' + c.customerId + '　建立於 ' + c.createdAt + '</div></div>' +
+      '</div>' +
+      '<div class="cust-link">' + link + '</div>' +
+      '<div class="cust-btns">' +
+        '<button class="btn-copy" onclick="copyLink(\'' + link + '\')">📋 複製連結</button>' +
+        '<button class="btn-edit" onclick="editCustomerNameUI(\'' + c.customerId + '\',\'' + escapeHtml(c.customerName).replace(/'/g,"\\'") + '\')">✏️ 改名稱</button>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function filterCustomers(query) {
+  const q = query.trim().toLowerCase();
+  if (!q) { renderCustomerList(allCustomers); return; }
+  renderCustomerList(allCustomers.filter(c => c.customerName.toLowerCase().includes(q)));
+}
+
+function createCustomerUI() {
+  const nameEl = document.getElementById('newCustName');
+  const name = nameEl.value.trim();
+  if (!name) { alert('請輸入客戶名稱'); return; }
+
+  fetch(V2_GAS_URL + '?action=createCustomer&name=' + encodeURIComponent(name) + '&pwd=' + encodeURIComponent(pwd))
+    .then(r => r.json())
+    .then(result => {
+      if (result.error) { alert('建立失敗：' + result.error); return; }
+      nameEl.value = '';
+      const link = ORDER_PAGE_URL + '?c=' + encodeURIComponent(result.customerId);
+      copyLink(link);
+      alert('✅ 已建立「' + result.customerName + '」的專屬連結，並複製到剪貼簿了，直接貼到 LINE 傳給客戶即可：\n\n' + link);
+      loadCustomers();
+    })
+    .catch(() => alert('建立失敗，請檢查網路後再試一次。'));
+}
+
+function editCustomerNameUI(id, oldName) {
+  const newName = prompt('修改客戶名稱：', oldName);
+  if (newName === null) return; // 取消
+  const trimmed = newName.trim();
+  if (!trimmed || trimmed === oldName) return;
+
+  fetch(V2_GAS_URL + '?action=updateCustomerName&id=' + encodeURIComponent(id) + '&name=' + encodeURIComponent(trimmed) + '&pwd=' + encodeURIComponent(pwd))
+    .then(r => r.json())
+    .then(result => {
+      if (result.error) { alert('修改失敗：' + result.error); return; }
+      loadCustomers();
+    })
+    .catch(() => alert('修改失敗，請檢查網路後再試一次。'));
+}
+
+function copyLink(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+  } else {
+    fallbackCopy(text);
+  }
+}
+
+function fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } catch(e) {}
+  document.body.removeChild(ta);
 }
 
 function toggleSelect(orderId) {
