@@ -60,7 +60,54 @@
 const V2_GAS_URL = 'https://script.google.com/macros/s/AKfycbzJoshr1TCO-8pCC3ICJyHKfhR1Frz9Q2RctGMbs2nsRgjy-2wdhWYKeneV_HaZzTGM/exec';
 // ★ 客戶下單頁面的正式網址，用來組客戶專屬連結（?c=編號）。切換成正式 index.html 後，記得回來改這裡。
 const ORDER_PAGE_URL = 'https://tom-teng-ai.github.io/fuyu-order/index.html';
-const FRONTEND_VERSION = 'v1.8-2026-08-19'; // ★ 新增客戶管理（專屬連結）分頁
+const FIREBASE_URL = 'https://fuyu-orders-default-rtdb.asia-southeast1.firebasedatabase.app';
+const FRONTEND_VERSION = 'v2.0-2026-09-20'; // ★ 訂單/客戶清單改成 Firebase 優先＋GAS 備援，密碼驗證仍走 GAS
+
+// 查某天所有訂單：走 Firebase，用 deliveryDate 索引查詢
+function loadOrdersFirebase_(date) {
+  return fetch(FIREBASE_URL + '/orders.json?orderBy=%22deliveryDate%22&equalTo=%22' + encodeURIComponent(date) + '%22')
+    .then(r => { if (!r.ok) throw new Error('firebase query failed'); return r.json(); })
+    .then(data => {
+      if (!data) return [];
+      return Object.entries(data).map(([orderId, o]) => {
+        const created = o.createdAt || Date.now();
+        const updated = o.updatedAt || created;
+        return {
+          orderId: orderId,
+          customer: o.customer,
+          deliveryDate: o.deliveryDate,
+          items: o.items || [],
+          status: o.status || 'active',
+          createdAt: fmtEpoch_(created),
+          updatedAt: fmtEpoch_(updated),
+          // ★ Firebase 沒有存每一次的詳細異動內容，只能概略判斷「有沒有被改過」，
+          // 不像走 GAS/試算表那樣能顯示精確改了幾次、每次改了什麼
+          changeCount: (updated > created) ? 2 : 1,
+          approxChangeCount: true, // ★ 標記這筆資料的異動次數是概略估計，不是精確次數
+          logs: []
+        };
+      });
+    });
+}
+
+function fmtEpoch_(ms) {
+  const d = new Date(ms);
+  const pad = n => String(n).padStart(2, '0');
+  return pad(d.getMonth()+1) + '/' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+function loadCustomersFirebase_() {
+  return fetch(FIREBASE_URL + '/customers.json')
+    .then(r => { if (!r.ok) throw new Error('firebase query failed'); return r.json(); })
+    .then(data => {
+      if (!data) return [];
+      return Object.entries(data).map(([id, c]) => ({
+        customerId: id,
+        customerName: c.customerName,
+        createdAt: fmtEpoch_(c.createdAt || Date.now())
+      }));
+    });
+}
 
 fetch(V2_GAS_URL + '?action=ping').then(r=>r.json()).then(d=>{
   const el = document.createElement('div');
@@ -110,14 +157,32 @@ function switchTab(tab) {
 
 function loadDashboard(dateOverride) {
   const date = dateOverride || todayStr();
-  fetch(V2_GAS_URL + '?action=dashboard&date=' + encodeURIComponent(date) + '&pwd=' + encodeURIComponent(pwd))
-    .then(r => r.json())
-    .then(data => {
-      if (data.error === 'unauthorized') { renderLogin('密碼錯誤，請再試一次'); return; }
-      sessionStorage.setItem('v2_dashboard_pwd', pwd);
-      renderOrders(data.orders || [], date);
-    })
-    .catch(() => renderLogin('連線失敗，請檢查網路後再試一次'));
+
+  // 還沒登入過（sessionStorage 沒有密碼快取）→ 這次一定要走 GAS，順便驗證密碼對不對
+  if (!sessionStorage.getItem('v2_dashboard_pwd')) {
+    fetch(V2_GAS_URL + '?action=dashboard&date=' + encodeURIComponent(date) + '&pwd=' + encodeURIComponent(pwd))
+      .then(r => r.json())
+      .then(data => {
+        if (data.error === 'unauthorized') { renderLogin('密碼錯誤，請再試一次'); return; }
+        sessionStorage.setItem('v2_dashboard_pwd', pwd);
+        renderOrders(data.orders || [], date);
+      })
+      .catch(() => renderLogin('連線失敗，請檢查網路後再試一次'));
+    return;
+  }
+
+  // ★ 已經登入過（密碼確認過了）→ 之後切換日期優先查 Firebase（快），失敗才退回 GAS
+  loadOrdersFirebase_(date)
+    .then(orders => renderOrders(orders, date))
+    .catch(() => {
+      fetch(V2_GAS_URL + '?action=dashboard&date=' + encodeURIComponent(date) + '&pwd=' + encodeURIComponent(pwd))
+        .then(r => r.json())
+        .then(data => {
+          if (data.error === 'unauthorized') { renderLogin('密碼錯誤，請再試一次'); return; }
+          renderOrders(data.orders || [], date);
+        })
+        .catch(() => renderLogin('連線失敗，請檢查網路後再試一次'));
+    });
 }
 
 let selectedIds = new Set();
@@ -151,7 +216,11 @@ function renderOrders(orders, date) {
   orders.forEach((o, idx) => {
     const badge = o.status === 'cancelled'
       ? '<span class="badge badge-cancelled">❌ 已取消</span>'
-      : (o.changeCount > 1 ? '<span class="badge badge-modified">✏️ 已修改 ' + (o.changeCount-1) + ' 次</span>' : '<span class="badge badge-new">🆕 新單</span>');
+      : (o.changeCount > 1
+          ? (o.approxChangeCount
+              ? '<span class="badge badge-modified">✏️ 已修改</span>'
+              : '<span class="badge badge-modified">✏️ 已修改 ' + (o.changeCount-1) + ' 次</span>')
+          : '<span class="badge badge-new">🆕 新單</span>');
 
     html += '<div class="order-card">' +
       '<div class="order-head" onclick="toggleItems(' + idx + ')">' +
@@ -201,15 +270,33 @@ let allCustomers = [];
 function loadCustomers() {
   currentTab = 'customers';
   document.getElementById('app').innerHTML = renderTabBar() + '<div class="empty">載入中...</div>';
-  fetch(V2_GAS_URL + '?action=customerList&pwd=' + encodeURIComponent(pwd))
-    .then(r => r.json())
-    .then(data => {
-      if (data.error === 'unauthorized') { renderLogin('密碼錯誤，請再試一次'); return; }
-      sessionStorage.setItem('v2_dashboard_pwd', pwd);
-      allCustomers = data.customers || [];
-      renderCustomers(allCustomers);
-    })
-    .catch(() => { document.getElementById('app').innerHTML = renderTabBar() + '<div class="err">連線失敗，請檢查網路後再試一次</div>'; });
+
+  if (!sessionStorage.getItem('v2_dashboard_pwd')) {
+    fetch(V2_GAS_URL + '?action=customerList&pwd=' + encodeURIComponent(pwd))
+      .then(r => r.json())
+      .then(data => {
+        if (data.error === 'unauthorized') { renderLogin('密碼錯誤，請再試一次'); return; }
+        sessionStorage.setItem('v2_dashboard_pwd', pwd);
+        allCustomers = data.customers || [];
+        renderCustomers(allCustomers);
+      })
+      .catch(() => { document.getElementById('app').innerHTML = renderTabBar() + '<div class="err">連線失敗，請檢查網路後再試一次</div>'; });
+    return;
+  }
+
+  // ★ 已經登入過 → 優先查 Firebase（快），失敗才退回 GAS
+  loadCustomersFirebase_()
+    .then(customers => { allCustomers = customers; renderCustomers(allCustomers); })
+    .catch(() => {
+      fetch(V2_GAS_URL + '?action=customerList&pwd=' + encodeURIComponent(pwd))
+        .then(r => r.json())
+        .then(data => {
+          if (data.error === 'unauthorized') { renderLogin('密碼錯誤，請再試一次'); return; }
+          allCustomers = data.customers || [];
+          renderCustomers(allCustomers);
+        })
+        .catch(() => { document.getElementById('app').innerHTML = renderTabBar() + '<div class="err">連線失敗，請檢查網路後再試一次</div>'; });
+    });
 }
 
 function renderCustomers(customers) {
