@@ -61,7 +61,7 @@ const V2_GAS_URL = 'https://script.google.com/macros/s/AKfycbzJoshr1TCO-8pCC3ICJ
 // ★ 客戶下單頁面的正式網址，用來組客戶專屬連結（?c=編號）。切換成正式 index.html 後，記得回來改這裡。
 const ORDER_PAGE_URL = 'https://tom-teng-ai.github.io/fuyu-order/index.html';
 const FIREBASE_URL = 'https://fuyu-orders-default-rtdb.asia-southeast1.firebasedatabase.app';
-const FRONTEND_VERSION = 'v2.0-2026-09-20'; // ★ 訂單/客戶清單改成 Firebase 優先＋GAS 備援，密碼驗證仍走 GAS
+const FRONTEND_VERSION = 'v2.1-2026-09-22'; // ★ 新增匯出前的同步狀態提示（比對Firebase跟試算表筆數）
 
 // 查某天所有訂單：走 Firebase，用 deliveryDate 索引查詢
 function loadOrdersFirebase_(date) {
@@ -195,11 +195,13 @@ function renderOrders(orders, date) {
     '<input type="date" id="dateInput" value="' + date + '" onchange="loadDashboard(this.value)">' +
     '<button onclick="loadDashboard(document.getElementById(\'dateInput\').value)">重新整理</button>' +
     '<button onclick="exportExcel(event)" style="background:#1864ab;">📥 匯出Excel</button>' +
-    '</div>';
+    '</div>' +
+    '<div id="syncStatus" style="font-size:13px;padding:8px 4px;color:#888;">🔄 正在確認同步狀態...</div>';
 
   if (!orders.length) {
     html += '<div class="empty">這天目前還沒有訂單</div>';
     document.getElementById('app').innerHTML = html;
+    checkSyncStatus(date, 0);
     return;
   }
 
@@ -239,8 +241,32 @@ function renderOrders(orders, date) {
   });
 
   document.getElementById('app').innerHTML = html;
+  const activeCount = orders.filter(o => o.status !== 'cancelled').length;
+  checkSyncStatus(date, activeCount);
 }
 
+// ★ 用來判斷「現在匯出安不安全」：比對 Firebase 看到的進行中訂單數，
+// 跟試算表裡實際存了幾筆，一致就代表背景同步（每5分鐘一次）已經跟上了，
+// 不用去記固定時間點、也不怕同步剛好比預期慢。
+function checkSyncStatus(date, firebaseActiveCount) {
+  const el = document.getElementById('syncStatus');
+  if (!el) return;
+  fetch(V2_GAS_URL + '?action=orderCountForDate&date=' + encodeURIComponent(date) + '&pwd=' + encodeURIComponent(pwd))
+    .then(r => r.json())
+    .then(data => {
+      if (!el || data.error) { if (el) el.style.display = 'none'; return; }
+      const sheetCount = data.count;
+      if (sheetCount >= firebaseActiveCount) {
+        el.innerHTML = '✅ 資料已同步完成，可以安心匯出';
+        el.style.color = '#2d6a4f';
+      } else {
+        const diff = firebaseActiveCount - sheetCount;
+        el.innerHTML = '⏳ 還有 ' + diff + ' 筆訂單尚未同步進試算表，建議稍後再匯出（背景同步每 5 分鐘跑一次）';
+        el.style.color = '#b45309';
+      }
+    })
+    .catch(() => { if (el) el.style.display = 'none'; });
+}
 function exportExcel(event) {
   const date = document.getElementById('dateInput').value;
   const btn = event.target;
