@@ -61,7 +61,7 @@ const V2_GAS_URL = 'https://script.google.com/macros/s/AKfycbzJoshr1TCO-8pCC3ICJ
 // ★ 客戶下單頁面的正式網址，用來組客戶專屬連結（?c=編號）。切換成正式 index.html 後，記得回來改這裡。
 const ORDER_PAGE_URL = 'https://tom-teng-ai.github.io/fuyu-order/index.html';
 const FIREBASE_URL = 'https://fuyu-orders-default-rtdb.asia-southeast1.firebasedatabase.app';
-const FRONTEND_VERSION = 'v2.1-2026-09-22'; // ★ 新增匯出前的同步狀態提示（比對Firebase跟試算表筆數）
+const FRONTEND_VERSION = 'v2.2-2026-09-23'; // ★ 匯出按鈕文字更新，配合後端「按下就自動先同步」的新流程
 
 // 查某天所有訂單：走 Firebase，用 deliveryDate 索引查詢
 function loadOrdersFirebase_(date) {
@@ -271,7 +271,9 @@ function exportExcel(event) {
   const date = document.getElementById('dateInput').value;
   const btn = event.target;
   const originalText = btn.textContent;
-  btn.disabled = true; btn.textContent = '匯出中...（可能要等 10-30 秒）';
+  // ★ 現在按下去，後端會先自動同步一次 Firebase → 試算表，確保資料最新，再產生檔案，
+  // 所以等待時間比純匯出稍微長一點，文字提示一併調整，避免使用者以為卡住了
+  btn.disabled = true; btn.textContent = '同步並匯出中...（可能要等 10-40 秒）';
 
   fetch(V2_GAS_URL + '?action=exportExcel&date=' + encodeURIComponent(date) + '&pwd=' + encodeURIComponent(pwd))
     .then(r => r.json())
