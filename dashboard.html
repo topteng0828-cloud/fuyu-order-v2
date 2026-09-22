@@ -61,7 +61,7 @@ const V2_GAS_URL = 'https://script.google.com/macros/s/AKfycbzJoshr1TCO-8pCC3ICJ
 // ★ 客戶下單頁面的正式網址，用來組客戶專屬連結（?c=編號）。切換成正式 index.html 後，記得回來改這裡。
 const ORDER_PAGE_URL = 'https://tom-teng-ai.github.io/fuyu-order/index.html';
 const FIREBASE_URL = 'https://fuyu-orders-default-rtdb.asia-southeast1.firebasedatabase.app';
-const FRONTEND_VERSION = 'v2.2-2026-09-23'; // ★ 匯出按鈕文字更新，配合後端「按下就自動先同步」的新流程
+const FRONTEND_VERSION = 'v2.3-2026-09-23'; // ★ 點開訂單時，補抓試算表裡真正的異動紀錄，不只顯示籠統的「已修改」
 
 // 查某天所有訂單：走 Firebase，用 deliveryDate 索引查詢
 function loadOrdersFirebase_(date) {
@@ -187,7 +187,10 @@ function loadDashboard(dateOverride) {
 
 let selectedIds = new Set();
 
+let currentOrders = [];
+
 function renderOrders(orders, date) {
+  currentOrders = orders;
   selectedIds.clear();
   currentTab = 'orders';
   let html = renderTabBar();
@@ -470,7 +473,32 @@ function deleteOrder(orderId, customer) {
 }
 
 function toggleItems(idx) {
-  document.getElementById('items' + idx).classList.toggle('open');
+  const el = document.getElementById('items' + idx);
+  el.classList.toggle('open');
+  if (!el.classList.contains('open')) return;
+
+  // ★ 列表是從 Firebase 抓的（快，但沒有詳細異動紀錄），只有真的有被修改過、
+  // 而且還沒補抓過的時候，才另外去試算表撈這一筆的詳細內容，補進畫面裡。
+  const o = currentOrders[idx];
+  if (!o || o._logsLoaded || !o.approxChangeCount || !(o.changeCount > 1)) return;
+
+  fetch(V2_GAS_URL + '?action=orderLogs&id=' + encodeURIComponent(o.orderId) + '&pwd=' + encodeURIComponent(pwd))
+    .then(r => r.json())
+    .then(data => {
+      if (data.error || !data.logs) return;
+      o._logsLoaded = true;
+      o.logs = data.logs;
+      if (!data.logs.length) return;
+
+      const logHtml = '<div class="realLogs" style="margin-top:8px;border-top:1px dashed #e0e0e0;padding-top:6px;">' +
+        data.logs.map(l => '<div class="log-line">' + l.time + '　' + l.detail + '</div>').join('') + '</div>';
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = logHtml;
+      const delBtn = el.querySelector('.delete-btn');
+      if (delBtn) el.insertBefore(wrapper.firstChild, delBtn);
+      else el.appendChild(wrapper.firstChild);
+    })
+    .catch(() => {});
 }
 
 function escapeHtml(s) {
