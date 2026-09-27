@@ -61,7 +61,7 @@ const V2_GAS_URL = 'https://script.google.com/macros/s/AKfycbzJoshr1TCO-8pCC3ICJ
 // ★ 客戶下單頁面的正式網址，用來組客戶專屬連結（?c=編號）。切換成正式 index.html 後，記得回來改這裡。
 const ORDER_PAGE_URL = 'https://tom-teng-ai.github.io/fuyu-order/index.html';
 const FIREBASE_URL = 'https://fuyu-orders-default-rtdb.asia-southeast1.firebasedatabase.app';
-const FRONTEND_VERSION = 'v2.4-2026-09-23'; // ★ 客戶管理（新增/改名/列表）改成直接讀寫 Firebase，不再經過 GAS
+const FRONTEND_VERSION = 'v3.1-2026-09-27'; // ★ 新增「移動送貨日期」功能，方便處理特殊日期出貨（例如週一）
 
 // 查某天所有訂單：走 Firebase，用 deliveryDate 索引查詢
 function loadOrdersFirebase_(date) {
@@ -158,31 +158,27 @@ function switchTab(tab) {
 function loadDashboard(dateOverride) {
   const date = dateOverride || todayStr();
 
-  // 還沒登入過（sessionStorage 沒有密碼快取）→ 這次一定要走 GAS，順便驗證密碼對不對
+  const afterLogin = () => {
+    loadOrdersFirebase_(date)
+      .then(orders => renderOrders(orders, date))
+      .catch(() => { document.getElementById('app').innerHTML = renderTabBar() + '<div class="err">連線失敗，請檢查網路後再試一次</div>'; });
+  };
+
+  // 還沒登入過（sessionStorage 沒有密碼快取）→ 用一個不碰訂單資料的輕量端點驗證密碼，
+  // 訂單本身一律改抓 Firebase（試算表那份訂單資料已經不再更新，不能再拿來當資料來源）
   if (!sessionStorage.getItem('v2_dashboard_pwd')) {
-    fetch(V2_GAS_URL + '?action=dashboard&date=' + encodeURIComponent(date) + '&pwd=' + encodeURIComponent(pwd))
+    fetch(V2_GAS_URL + '?action=getSettings&pwd=' + encodeURIComponent(pwd))
       .then(r => r.json())
       .then(data => {
         if (data.error === 'unauthorized') { renderLogin('密碼錯誤，請再試一次'); return; }
         sessionStorage.setItem('v2_dashboard_pwd', pwd);
-        renderOrders(data.orders || [], date);
+        afterLogin();
       })
       .catch(() => renderLogin('連線失敗，請檢查網路後再試一次'));
     return;
   }
 
-  // ★ 已經登入過（密碼確認過了）→ 之後切換日期優先查 Firebase（快），失敗才退回 GAS
-  loadOrdersFirebase_(date)
-    .then(orders => renderOrders(orders, date))
-    .catch(() => {
-      fetch(V2_GAS_URL + '?action=dashboard&date=' + encodeURIComponent(date) + '&pwd=' + encodeURIComponent(pwd))
-        .then(r => r.json())
-        .then(data => {
-          if (data.error === 'unauthorized') { renderLogin('密碼錯誤，請再試一次'); return; }
-          renderOrders(data.orders || [], date);
-        })
-        .catch(() => renderLogin('連線失敗，請檢查網路後再試一次'));
-    });
+  afterLogin();
 }
 
 let selectedIds = new Set();
@@ -198,13 +194,11 @@ function renderOrders(orders, date) {
     '<input type="date" id="dateInput" value="' + date + '" onchange="loadDashboard(this.value)">' +
     '<button onclick="loadDashboard(document.getElementById(\'dateInput\').value)">重新整理</button>' +
     '<button onclick="exportExcel(event)" style="background:#1864ab;">📥 匯出Excel</button>' +
-    '</div>' +
-    '<div id="syncStatus" style="font-size:13px;padding:8px 4px;color:#888;">🔄 正在確認同步狀態...</div>';
+    '</div>';
 
   if (!orders.length) {
     html += '<div class="empty">這天目前還沒有訂單</div>';
     document.getElementById('app').innerHTML = html;
-    checkSyncStatus(date, 0);
     return;
   }
 
@@ -238,37 +232,13 @@ function renderOrders(orders, date) {
         o.items.map(it => '<div>• ' + escapeHtml(it.name) + '　' + it.qty + (it.unit||'') + (it.note ? '（'+escapeHtml(it.note)+'）' : '') + '</div>').join('') +
         (o.logs && o.logs.length ? '<div style="margin-top:8px;border-top:1px dashed #e0e0e0;padding-top:6px;">' +
           o.logs.map(l => '<div class="log-line">' + l.time + '　' + l.detail + '</div>').join('') + '</div>' : '') +
+        (o.status !== 'cancelled' ? '<button class="delete-btn" style="background:#eef6ff;color:#1864ab;border-color:#a8c9e8;margin-top:10px;" onclick="event.stopPropagation();moveOrderDateUI(\'' + o.orderId + '\',\'' + escapeHtml(o.customer).replace(/'/g,"\\'") + '\',\'' + o.deliveryDate + '\')">📅 移動送貨日期</button>' : '') +
         '<button class="delete-btn" onclick="event.stopPropagation();deleteOrder(\'' + o.orderId + '\',\'' + escapeHtml(o.customer).replace(/'/g,"\\'") + '\')">🗑️ 刪除這筆訂單（測試用，正式資料請用「取消」）</button>' +
       '</div>' +
     '</div>';
   });
 
   document.getElementById('app').innerHTML = html;
-  const activeCount = orders.filter(o => o.status !== 'cancelled').length;
-  checkSyncStatus(date, activeCount);
-}
-
-// ★ 用來判斷「現在匯出安不安全」：比對 Firebase 看到的進行中訂單數，
-// 跟試算表裡實際存了幾筆，一致就代表背景同步（每5分鐘一次）已經跟上了，
-// 不用去記固定時間點、也不怕同步剛好比預期慢。
-function checkSyncStatus(date, firebaseActiveCount) {
-  const el = document.getElementById('syncStatus');
-  if (!el) return;
-  fetch(V2_GAS_URL + '?action=orderCountForDate&date=' + encodeURIComponent(date) + '&pwd=' + encodeURIComponent(pwd))
-    .then(r => r.json())
-    .then(data => {
-      if (!el || data.error) { if (el) el.style.display = 'none'; return; }
-      const sheetCount = data.count;
-      if (sheetCount >= firebaseActiveCount) {
-        el.innerHTML = '✅ 資料已同步完成，可以安心匯出';
-        el.style.color = '#2d6a4f';
-      } else {
-        const diff = firebaseActiveCount - sheetCount;
-        el.innerHTML = '⏳ 還有 ' + diff + ' 筆訂單尚未同步進試算表，建議稍後再匯出（背景同步每 5 分鐘跑一次）';
-        el.style.color = '#b45309';
-      }
-    })
-    .catch(() => { if (el) el.style.display = 'none'; });
 }
 function exportExcel(event) {
   const date = document.getElementById('dateInput').value;
@@ -276,7 +246,7 @@ function exportExcel(event) {
   const originalText = btn.textContent;
   // ★ 現在按下去，後端會先自動同步一次 Firebase → 試算表，確保資料最新，再產生檔案，
   // 所以等待時間比純匯出稍微長一點，文字提示一併調整，避免使用者以為卡住了
-  btn.disabled = true; btn.textContent = '同步並匯出中...（可能要等 10-40 秒）';
+  btn.disabled = true; btn.textContent = '匯出中...（可能要等 10-30 秒）';
 
   fetch(V2_GAS_URL + '?action=exportExcel&date=' + encodeURIComponent(date) + '&pwd=' + encodeURIComponent(pwd))
     .then(r => r.json())
@@ -465,26 +435,46 @@ function deleteOrder(orderId, customer) {
     .catch(() => alert('刪除失敗，請檢查網路後再試一次。'));
 }
 
+// ★ 移動訂單的送貨日期，例如客戶特殊要求週一出貨（系統平常自動算的日期不會落在週一）。
+// 這個動作透過 GAS 用管理員權限執行，不受一般截止時間規則限制，
+// 客戶自己改單走的是另一條路徑，完全不受影響、一樣受嚴格規則把關。
+function moveOrderDateUI(orderId, customer, currentDate) {
+  const newDate = prompt('把「' + customer + '」這筆訂單的送貨日期，改成幾號？\n（格式：YYYY-MM-DD，例如 2026-09-29）', currentDate);
+  if (!newDate) return;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(newDate)) { alert('日期格式不對，請用 YYYY-MM-DD，例如 2026-09-29'); return; }
+  if (newDate === currentDate) return;
+
+  fetch(V2_GAS_URL + '?action=moveOrderDate&id=' + encodeURIComponent(orderId) + '&newDate=' + encodeURIComponent(newDate) + '&pwd=' + encodeURIComponent(pwd))
+    .then(r => r.json())
+    .then(result => {
+      if (result.error) { alert('移動失敗：' + result.error); return; }
+      alert('✅ 已把「' + customer + '」的送貨日期改成 ' + newDate + '，請切換到那個日期確認。');
+      loadDashboard(document.getElementById('dateInput').value);
+    })
+    .catch(() => alert('移動失敗，請檢查網路後再試一次。'));
+}
+
 function toggleItems(idx) {
   const el = document.getElementById('items' + idx);
   el.classList.toggle('open');
   if (!el.classList.contains('open')) return;
 
-  // ★ 列表是從 Firebase 抓的（快，但沒有詳細異動紀錄），只有真的有被修改過、
-  // 而且還沒補抓過的時候，才另外去試算表撈這一筆的詳細內容，補進畫面裡。
+  // ★ 列表是從 Firebase 抓的（快），異動紀錄現在也是客戶端改單當下直接寫進 Firebase，
+  // 只有真的有被修改過、而且還沒補抓過的時候，才另外去撈這一筆的詳細內容，補進畫面裡。
   const o = currentOrders[idx];
   if (!o || o._logsLoaded || !o.approxChangeCount || !(o.changeCount > 1)) return;
 
-  fetch(V2_GAS_URL + '?action=orderLogs&id=' + encodeURIComponent(o.orderId) + '&pwd=' + encodeURIComponent(pwd))
-    .then(r => r.json())
+  fetch(FIREBASE_URL + '/orderLogs/' + encodeURIComponent(o.orderId) + '.json')
+    .then(r => { if (!r.ok) throw new Error('log fetch failed'); return r.json(); })
     .then(data => {
-      if (data.error || !data.logs) return;
       o._logsLoaded = true;
-      o.logs = data.logs;
-      if (!data.logs.length) return;
+      if (!data) return;
+      const logs = Object.values(data).sort((a,b) => a.time - b.time);
+      o.logs = logs;
+      if (!logs.length) return;
 
       const logHtml = '<div class="realLogs" style="margin-top:8px;border-top:1px dashed #e0e0e0;padding-top:6px;">' +
-        data.logs.map(l => '<div class="log-line">' + l.time + '　' + l.detail + '</div>').join('') + '</div>';
+        logs.map(l => '<div class="log-line">' + fmtEpoch_(l.time) + '　' + escapeHtml(l.detail) + '</div>').join('') + '</div>';
       const wrapper = document.createElement('div');
       wrapper.innerHTML = logHtml;
       const delBtn = el.querySelector('.delete-btn');
